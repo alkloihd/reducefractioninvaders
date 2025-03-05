@@ -388,7 +388,7 @@
       bullets = bullets.filter(bullet => bullet.active);
       
       // Determine effective alien fall speed (doubled during multiplier mode)
-      let effectiveFallSpeed = gameSpeed * 0.55;
+      let effectiveFallSpeed = gameSpeed * 0.3;
       if (multiplierRemaining > 0) effectiveFallSpeed *= 2;
       
       // Update aliens
