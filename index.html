@@ -425,7 +425,7 @@
       bullets.forEach(bullet => bullet.update());
       bullets = bullets.filter(bullet => bullet.active);
     
-      let effectiveFallSpeed = gameSpeed * 0.55;
+      let effectiveFallSpeed = gameSpeed * 0.25;
       if (multiplierRemaining > 0) effectiveFallSpeed *= 2;
     
       aliens.forEach(alien => alien.update(effectiveFallSpeed));
