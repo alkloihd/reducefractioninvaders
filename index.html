@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lodhia's Space Invaders Fractions</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      overflow: hidden;
+    }
+    /* Overlays for menu, pause and game over */
+    #menu, #pauseMenu, #gameOverOverlay {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #222;
+      padding: 20px;
+      border: 2px solid #555;
+      border-radius: 8px;
+      z-index: 10;
+    }
+    /* Hide pause and game over overlays by default */
+    #pauseMenu, #gameOverOverlay {
+      display: none;
+    }
+    #menu h1, #pauseMenu h1, #gameOverOverlay h1 {
+      margin-top: 0;
+    }
+    /* We no longer need the operations selection UI – you can hide or remove it */
+    #speedControl {
+      margin-bottom: 20px;
+    }
+    #menu button, #pauseMenu button, #startGame {
+      padding: 10px 20px;
+      font-size: 18px;
+      cursor: pointer;
+    }
+    #menu button, #pauseMenu button {
+      font-size: 18px;
+      width: 40px;
+      height: 40px;
+      margin: 0 10px;
+    }
+    /* Canvas setup */
+    #gameCanvas {
+      background: #000;
+      display: none;
+      margin: 0 auto;
+      border: 2px solid #555;
+      position: relative;
+      z-index: 1;
+    }
+    /* Overlays text styling */
+    #gameOverOverlay p, #pauseMenu p {
+      font-size: 24px;
+      margin: 10px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Start Menu -->
+  <div id="menu">
+    <h1>Lodhia's Space Invaders Fractions</h1>
+    <!-- You can remove the operations options since we're now using fractions -->
+    <div id="speedControl">
+      <h2>Game Speed</h2>
+      <button id="speedDown">–</button>
+      <span id="speedValue">3</span>
+      <button id="speedUp">+</button>
+    </div>
+    <div>
+      <button id="startGame">Start</button>
+      <p>Or press Enter to start</p>
+    </div>
+  </div>
+
+  <!-- Canvas (800x800) -->
+  <canvas id="gameCanvas" width="800" height="800"></canvas>
+
+  <!-- Pause Menu (hidden by default) -->
+  <div id="pauseMenu">
+    <h1>Paused</h1>
+    <div id="pauseSpeedControl">
+      <h2>Game Speed</h2>
+      <button id="pauseSpeedDown">–</button>
+      <span id="pauseSpeedValue">3</span>
+      <button id="pauseSpeedUp">+</button>
+    </div>
+    <p>Press R to resume, or Escape to return to the main menu</p>
+  </div>
+
+  <!-- Game Over Overlay (hidden by default) -->
+  <div id="gameOverOverlay">
+    <h1>Game Over</h1>
+    <p id="finalScore"></p>
+    <p>Press Escape to return to the menu</p>
+  </div>
+
+  <script>
+    "use strict";
+    // ----- Global Variables & Setup -----
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const menu = document.getElementById("menu");
+    const pauseMenu = document.getElementById("pauseMenu");
+    const gameOverOverlay = document.getElementById("gameOverOverlay");
+    const finalScoreText = document.getElementById("finalScore");
+    const speedValueSpan = document.getElementById("speedValue");
+    const pauseSpeedValueSpan = document.getElementById("pauseSpeedValue");
+    let currentState = "menu"; // "menu", "playing", "paused", "gameover"
+
+    // Game speed setting:
+    let gameSpeed = 3; // from 1 to 5 (controls falling speed)
+
+    // Game variables:
+    let player, bullets, aliens, explosions, question;
+    let score = 0;
+    let lives = 15;           // starting lives
+    let streak = 0;           // consecutive correct answers
+    let multiplierRemaining = 0; // questions left in multiplier mode
+    let questionCount = 0;       // number of questions generated (for progressive difficulty)
+    let currentAttempts = 0;     // tracks wrong attempts for current question
+
+    // For background stars (falling stars)
+    let stars = [];
+    const starCount = 50;
+
+    // For audio (using Web Audio API)
+    let audioCtx = null;
+    function initAudio() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    function playSound(type) {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      if (type === "explosion") {
+        osc.frequency.value = 100;
+        gain.gain.value = 0.5;
+      } else if (type === "shoot") {
+        osc.frequency.value = 300;
+        gain.gain.value = 0.2;
+      }
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    // ----- Falling Stars Functions -----
+    function initStars() {
+      stars = [];
+      for (let i = 0; i < starCount; i++) {
+        stars.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          speed: 0.5 + Math.random() * 1,
+          size: Math.random() * 2 + 1
+        });
+      }
+    }
+    function updateStars() {
+      stars.forEach(star => {
+        star.y += star.speed;
+        if (star.y > canvas.height) {
+          star.y = 0;
+          star.x = Math.random() * canvas.width;
+        }
+      });
+    }
+    function drawStars() {
+      ctx.fillStyle = "#fff";
+      stars.forEach(star => {
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Global variables for multiplier banner
+    let multiplierBannerTimer = 0; // frames remaining to display banner (approx. 90 frames = 1.5 sec)
+    let frameCount = 0; // for animation
+
+    // ----- Utility Functions -----
+    function rectCircleCollision(circle, rect) {
+      let distX = Math.abs(circle.x - rect.x - rect.width / 2);
+      let distY = Math.abs(circle.y - rect.y - rect.height / 2);
+      if (distX > (rect.width/2 + circle.r)) return false;
+      if (distY > (rect.height/2 + circle.r)) return false;
+      if (distX <= (rect.width/2)) return true; 
+      if (distY <= (rect.height/2)) return true;
+      let dx = distX - rect.width/2;
+      let dy = distY - rect.height/2;
+      return (dx*dx + dy*dy <= (circle.r * circle.r));
+    }
+
+    // ----- Classes -----
+    class Player {
+      constructor() {
+        this.width = 50;
+        this.height = 30;
+        this.x = canvas.width / 2;
+        this.y = canvas.height - 50;
+        this.speed = 7;
+      }
+      update() {
+        if (keys["ArrowLeft"]) this.x -= this.speed;
+        if (keys["ArrowRight"]) this.x += this.speed;
+        if (this.x < this.width / 2) this.x = this.width / 2;
+        if (this.x > canvas.width - this.width / 2) this.x = canvas.width - this.width / 2;
+      }
+      draw(ctx) {
+        ctx.fillStyle = "#00F";
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y - this.height / 2);
+        ctx.lineTo(this.x - this.width / 2, this.y + this.height / 2);
+        ctx.lineTo(this.x + this.width / 2, this.y + this.height / 2);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    class Bullet {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.r = 5;
+        this.speed = 12;
+        this.active = true;
+      }
+      update() {
+        this.y -= this.speed;
+        if (this.y < 0) this.active = false;
+      }
+      draw(ctx) {
+        ctx.fillStyle = "#FF0";
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    class Alien {
+      constructor(x, y, answer, isCorrect) {
+        this.x = x;
+        this.y = y;
+        this.width = 50;
+        this.height = 40;
+        this.answer = answer;
+        this.isCorrect = isCorrect;
+        this.alive = true;
+      }
+      update(fallSpeed) {
+        this.y += fallSpeed;
+        if (this.y - this.height/2 > canvas.height) this.alive = false;
+      }
+      draw(ctx) {
+        ctx.fillStyle = "#0A0";
+        ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+        ctx.fillStyle = "#000";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        // Render fractions in a fraction style if the answer contains a slash.
+        if (typeof this.answer === 'string' && this.answer.includes('/')) {
+          let parts = this.answer.split('/');
+          ctx.font = "16px Arial";
+          // Draw numerator
+          ctx.fillText(parts[0], this.x, this.y - 8);
+          // Draw horizontal line
+          let lineWidth = ctx.measureText(parts[0]).width;
+          ctx.beginPath();
+          ctx.moveTo(this.x - lineWidth/2, this.y);
+          ctx.lineTo(this.x + lineWidth/2, this.y);
+          ctx.stroke();
+          // Draw denominator
+          ctx.fillText(parts[1], this.x, this.y + 16);
+        } else {
+          ctx.font = "20px Arial";
+          ctx.fillText(this.answer, this.x, this.y);
+        }
+      }
+      getRect() {
+        return { x: this.x - this.width/2, y: this.y - this.height/2, width: this.width, height: this.height };
+      }
+    }
+
+    class Explosion {
+      constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.radius = 0;
+        this.maxRadius = 50;
+        this.color = color;
+        this.alpha = 1.0;
+      }
+      update() {
+        this.radius += 2;
+        this.alpha -= 0.03;
+      }
+      draw(ctx) {
+        ctx.save();
+        ctx.globalAlpha = this.alpha;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      isFinished() {
+        return this.alpha <= 0;
+      }
+    }
+
+    // ----- Fraction Question & Alien Generation -----
+    // Global variable for loaded question bank
+    let questionsBank = [];
+
+    // Load questions from questions.json
+    function loadQuestions() {
+      fetch('questions.json')
+        .then(response => response.json())
+        .then(data => {
+          questionsBank = data;
+        })
+        .catch(err => console.error("Error loading questions:", err));
+    }
+
+    // Select a random question from the bank and generate aliens accordingly.
+    function newQuestionAndAliens() {
+      questionCount++;
+      currentAttempts = 0; // reset attempts for the new question
+      let qIndex = Math.floor(Math.random() * questionsBank.length);
+      question = questionsBank[qIndex];
+      aliens = generateAliens(question);
+    }
+
+    // Create aliens using the correct answer and the provided wrong answers.
+    function generateAliens(question) {
+      const aliensArr = [];
+      const answers = [question.reduced].concat(question.wrong); // total 5 answers
+      // Shuffle the answers array
+      for (let i = answers.length - 1; i > 0; i--) {
+        let j = Math.floor(Math.random() * (i + 1));
+        [answers[i], answers[j]] = [answers[j], answers[i]];
+      }
+      const margin = 50;
+      const spacing = (canvas.width - 2 * margin) / (5 - 1);
+      for (let i = 0; i < 5; i++) {
+        let x = margin + i * spacing;
+        let y = 50;
+        let ans = answers[i];
+        let isCorrect = (ans === question.reduced);
+        aliensArr.push(new Alien(x, y, ans, isCorrect));
+      }
+      return aliensArr;
+    }
+
+    // ----- Game Initialization -----
+    function initGame() {
+      score = 0;
+      lives = 15;
+      streak = 0;
+      multiplierRemaining = 0;
+      questionCount = 0;
+      currentAttempts = 0;
+      bullets = [];
+      explosions = [];
+      player = new Player();
+      newQuestionAndAliens();
+      initStars();
+    }
+
+    // ----- Game Loop Functions -----
+    function updateGame() {
+      let questionReset = false;
+      frameCount++;
+
+      // Update background stars
+      updateStars();
+      // Update player and bullets
+      player.update();
+      bullets.forEach(bullet => bullet.update());
+      bullets = bullets.filter(bullet => bullet.active);
+      
+      // Determine effective alien fall speed (doubled during multiplier mode)
+      let effectiveFallSpeed = gameSpeed * 0.55;
+      if (multiplierRemaining > 0) effectiveFallSpeed *= 2;
+      
+      // Update aliens
+      aliens.forEach(alien => alien.update(effectiveFallSpeed));
+
+      // Check bullet–alien collisions
+      bullets.forEach(bullet => {
+        aliens.forEach(alien => {
+          if (alien.alive && rectCircleCollision({ x: bullet.x, y: bullet.y, r: bullet.r }, alien.getRect())) {
+            if (alien.isCorrect) {
+              // Correct answer logic
+              if (multiplierRemaining > 0) {
+                score += 10 * 10;
+                multiplierRemaining--;
+              } else {
+                score += 10;
+                streak++;
+                if (streak % 5 === 0) lives++;
+                if (streak >= 10 && multiplierRemaining === 0) {
+                  multiplierRemaining = 5;
+                  multiplierBannerTimer = 180;
+                }
+              }
+              playSound("explosion");
+              explosions.push(new Explosion(alien.x, alien.y, "#0F0"));
+              newQuestionAndAliens();
+              questionReset = true;
+            } else {
+              // Wrong answer: increment attempts and only lose life if 3 wrong attempts reached.
+              playSound("explosion");
+              explosions.push(new Explosion(alien.x, alien.y, "#F00"));
+              currentAttempts++;
+              if (currentAttempts >= 3) {
+                lives--;
+                streak = 0;
+                multiplierRemaining = 0;
+                newQuestionAndAliens();
+                questionReset = true;
+              }
+            }
+            bullet.active = false;
+            alien.alive = false;
+          }
+        });
+      });
+
+      // Remove aliens that have left the screen; check if correct alien escaped.
+      aliens = aliens.filter(alien => {
+        if (!alien.alive) return false;
+        if (alien.isCorrect && (alien.y + alien.height/2 >= player.y - 10)) {
+          lives--;
+          streak = 0;
+          multiplierRemaining = 0;
+          newQuestionAndAliens();
+          questionReset = true;
+          return false;
+        }
+        return true;
+      });
+      
+      // If no aliens remain (player may have missed shots) and we haven't already advanced the question:
+      if (!questionReset && aliens.length === 0) {
+          lives--;
+          streak = 0;
+          multiplierRemaining = 0;
+          newQuestionAndAliens();
+          questionReset = true;
+      }
+
+      // Update explosions
+      explosions.forEach(exp => exp.update());
+      explosions = explosions.filter(exp => !exp.isFinished());
+
+      // Decrement multiplier banner timer if active
+      if (multiplierBannerTimer > 0) multiplierBannerTimer--;
+
+      // Check for game over
+      if (lives <= 0) {
+        currentState = "gameover";
+        gameOverOverlay.style.display = "flex";
+        finalScoreText.textContent = `Final Score: ${score}`;
+      }
+    }
+
+    function drawGame() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawStars();
+      
+      // Draw the fraction question in the background – rendered as text.
+      ctx.save();
+      ctx.font = "48px Arial";
+      ctx.fillStyle = "rgba(200,200,200,0.9)";
+      ctx.textAlign = "center";
+      ctx.fillText("Reduce: " + question.fraction, canvas.width/2, canvas.height/2);
+      ctx.restore();
+
+      // Draw game objects
+      player.draw(ctx);
+      bullets.forEach(bullet => bullet.draw(ctx));
+      aliens.forEach(alien => alien.draw(ctx));
+      explosions.forEach(exp => exp.draw(ctx));
+
+      // Draw HUD: Score, Lives, Streak, and multiplier status
+      ctx.fillStyle = "#fff";
+      ctx.font = "20px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("Score: " + score, 10, 25);
+      ctx.fillText("Lives: " + lives, 10, 50);
+      ctx.fillText("Streak: " + streak, 10, 75);
+      if (multiplierRemaining > 0) {
+        ctx.fillText("Multiplier Active (" + multiplierRemaining + " left)", 10, 100);
+      }
+
+      // Draw the multiplier banner if active
+      if (multiplierBannerTimer > 0) {
+        ctx.save();
+        ctx.font = "bold 48px Arial";
+        let hue = (frameCount * 5) % 360;
+        ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+        let text = "MULTIPLIER MODE!";
+        let textWidth = ctx.measureText(text).width;
+        let bannerX = -textWidth + ((90 - multiplierBannerTimer) / 90) * (canvas.width + textWidth);
+        let bannerY = 100;
+        ctx.fillText(text, bannerX, bannerY);
+        ctx.restore();
+      }
+    }
+
+    function gameLoop() {
+      if (currentState === "playing") {
+        updateGame();
+        drawGame();
+      }
+      requestAnimationFrame(gameLoop);
+    }
+
+    // ----- Input Handlers -----
+    const keys = {};
+    document.addEventListener("keydown", (e) => {
+      keys[e.key] = true;
+      if (currentState === "menu" && e.key === "Enter") startPlaying();
+      if (currentState === "playing") {
+        if (e.key === " ") {
+          bullets.push(new Bullet(player.x, player.y - player.height/2));
+          initAudio();
+          playSound("shoot");
+        }
+        if (e.key === "Escape") {
+          currentState = "paused";
+          pauseMenu.style.display = "block";
+        }
+      } else if (currentState === "paused") {
+        if (e.key.toLowerCase() === "r") {
+          currentState = "playing";
+          pauseMenu.style.display = "none";
+        } else if (e.key === "Escape") {
+          currentState = "menu";
+          pauseMenu.style.display = "none";
+          showMenu();
+        }
+      }
+      if (currentState === "gameover" && e.key === "Escape") {
+        showMenu();
+      }
+    });
+    document.addEventListener("keyup", (e) => {
+      keys[e.key] = false;
+    });
+
+    // ----- Menu & Pause Controls -----
+    document.getElementById("speedUp").addEventListener("click", () => {
+      if (gameSpeed < 5) {
+        gameSpeed++;
+        speedValueSpan.textContent = gameSpeed;
+      }
+    });
+    document.getElementById("speedDown").addEventListener("click", () => {
+      if (gameSpeed > 1) {
+        gameSpeed--;
+        speedValueSpan.textContent = gameSpeed;
+      }
+    });
+    document.getElementById("startGame").addEventListener("click", () => {
+      startPlaying();
+    });
+    document.getElementById("pauseSpeedUp").addEventListener("click", () => {
+      if (gameSpeed < 5) {
+        gameSpeed++;
+        pauseSpeedValueSpan.textContent = gameSpeed;
+        speedValueSpan.textContent = gameSpeed;
+      }
+    });
+    document.getElementById("pauseSpeedDown").addEventListener("click", () => {
+      if (gameSpeed > 1) {
+        gameSpeed--;
+        pauseSpeedValueSpan.textContent = gameSpeed;
+        speedValueSpan.textContent = gameSpeed;
+      }
+    });
+
+    function startPlaying() {
+      // Ensure questions have been loaded before starting.
+      if (questionsBank.length === 0) {
+        alert("Questions not loaded yet. Please try again in a moment.");
+        return;
+      }
+      menu.style.display = "none";
+      gameOverOverlay.style.display = "none";
+      pauseMenu.style.display = "none";
+      canvas.style.display = "block";
+      currentState = "playing";
+      initGame();
+    }
+
+    function showMenu() {
+      currentState = "menu";
+      menu.style.display = "block";
+      canvas.style.display = "none";
+      gameOverOverlay.style.display = "none";
+      pauseMenu.style.display = "none";
+    }
+
+    // Start the game loop and load questions
+    loadQuestions();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
